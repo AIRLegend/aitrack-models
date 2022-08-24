@@ -42,4 +42,10 @@ python src/preprocessing.py ls3d
 python src/training.py
 ```
 
+You may also visualize progress with Tensorboard
+
+```
+tensorboard --logdir=runs
+```
+
 
