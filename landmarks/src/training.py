@@ -1,3 +1,9 @@
+import os
+import sys
+import argparse
+
+from typing import Dict, Union
+from torch.cuda import check_error
 from torchvision.models import resnet18, ResNet18_Weights
 
 from model import Resnet18
@@ -19,157 +25,311 @@ import pandas as pd
 import numpy as np
 from PIL import Image
 
-
-EPOCHS = 100
-BATCH_SIZE = 128
-DATALOADER_N_WORKERS = 4
-
-
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-data = pd.read_csv('datasets/LS3D-W/splits.csv')
 
-
-backbone = resnet18(num_classes=512)
-backbone.conv1 = torch.nn.Conv2d(
-    1, 64, kernel_size=7, stride=2, padding=3, bias=False
-)  # one channel only.
-
-
-model = Resnet18(backbone).to(device)
-trainable_params = model.parameters()
-
-criterion = torch.nn.MSELoss()
-optimizer = optim.Adam(trainable_params, lr=1e-3)
-
-
-dataset_train = BWLS3D(
-    data[data.is_train == 1],
-    transforms=[
-        RandomRotation(rotation_prob=.5),
-    ]
-)
-
-dataset_val= BWLS3D(
-    data[data.is_train == 0],
-    transforms=[
-        RandomRotation(rotation_prob=.3),
-    ]
-)
-
-
-
-image_loader = DataLoader(dataset_train, 
-                          batch_size  = BATCH_SIZE, 
-                          shuffle     = True, 
-                          num_workers = DATALOADER_N_WORKERS,
-                          pin_memory  = True)
-
-val_image_loader = DataLoader(dataset_val, 
-                          batch_size  = BATCH_SIZE, 
-                          shuffle     = True, 
-                          num_workers = DATALOADER_N_WORKERS,
-                          pin_memory  = True)
-
-
-
-writer = SummaryWriter(comment='BW_Regre')
-
-pbar = trange(len(image_loader))
-
-
-num_train_batches = np.ceil(len(dataset_train) / BATCH_SIZE)
-num_val_batches = np.ceil(len(dataset_val) / BATCH_SIZE)
-
-
-train_losses = []
-
-for epoch in range(EPOCHS):
-
-    running_loss = 0.0
-    running_nme = 0.0
-
-    model.train(mode=True)
+class Trainer:
+    def __init__(
+        self, 
+        model, 
+        loss, 
+        optimizer,
+        train_dataloader,
+        val_dataloader = None,
+        extra_metrics: Union[Dict, None]= None,
+        tensorboard_writer=None,
+        save_checkpoint_every:int = 5,
+        checkpoint_path = "checkpoints/",
+        model_id = "model"
+        
+    ) -> None:
     
-    for i, batch in enumerate(image_loader):
-        imgs = batch['image'].to(torch.float).to(device)
-        lms = batch['landmarks'].to(device)
-        ds = batch['d'].to(device)
+        self.model = model
+        self.loss = loss
+        self.optimizer = optimizer
+        self.train_dataloader = train_dataloader
+        self.val_dataloader = val_dataloader
+        self.extra_metrics = extra_metrics
+
+
+        self._train_samples_nb = len(self.train_dataloader.dataset)
+        self._val_samples_nb = len(self.val_dataloader.dataset) if self.val_dataloader else -1
+
+
+        self._train_batch_nb = int(np.ceil(self._train_samples_nb / self.train_dataloader.batch_size))
+        if val_dataloader:
+            self._val_batch_nb = int(np.ceil(self._val_samples_nb / self.val_dataloader.batch_size))
+
+        self.tensorboard_writer = tensorboard_writer
+        self.save_checkpoint_every = save_checkpoint_every
+        self.checkpoint_path = checkpoint_path
+        self.model_id=model_id
+        
+
+
+    def train(self, epochs=10, early_stop=None):
+        model = self.model
+        pbar = trange(self._train_batch_nb)
+
+        train_losses = []
+        val_losses = []
+
+        for epoch in range(epochs):
+            running_loss = 0.0
+            running_metrics = {}
+
+            model.train(mode=True)
             
-        # Write inputs to tensorboard
-        # if i == 0:
-        #     denormed = imgs.clone()
-        #     for i in range(256):
-        #         denormed[i] = denormalizer(denormalizer(denormed[i]))
-        #     writer.add_images("input_imgs", denormed, epoch)
-        #     if denormed.min() < 0 or denormed.max() > 1:
-        #         import pdb; pdb.set_trace()
-        #     break
+            # Actual train
+            for i, batch in enumerate(self.train_dataloader):
+                loss, metrics = self._run_train_step(batch)
 
-        optimizer.zero_grad()
+                running_loss += loss / self._train_batch_nb
 
-        outputs = model(imgs)
-        loss = criterion(outputs.float(), lms.float())
+                for m, v in metrics.items():
+                    running_metrics[f'train/{m}'] = v / self._train_batch_nb
 
-        loss.backward()
-        optimizer.step()
+                running_metrics['train/loss'] = running_loss
 
-        running_loss += loss.item() / (num_train_batches)
-        running_nme += nme(outputs, lms, ds).item() / (num_train_batches)
+                pbar.update()
+                
+                pbar.set_description(f"[Epoch {epoch+1}/{epochs}] Loss: {running_loss}", refresh=True)
+            
+            train_losses.append(running_loss)
+            # Validation
+            if not self.val_dataloader:
+                continue
 
-        pbar.update()
-        
-        pbar.set_description(f"[Epoch {epoch+1}/{EPOCHS}] Loss: {running_loss}", refresh=True)
-        
+            running_val_loss = 0.0
+            for i, batch in enumerate(self.val_dataloader):
+                loss, metrics = self._run_val_step(batch)
 
-    model.train(mode=False)
+                running_val_loss += loss / self._val_batch_nb
+
+                for m, v in metrics.items():
+                    running_metrics[f'val/{m}'] = v / self._val_batch_nb
+
+                running_metrics['val/loss'] = running_val_loss
+
+                pbar.set_description(f"[Epoch {epoch+1}/{epochs}] Val Loss: {running_val_loss}", refresh=True)
+
+            val_losses.append(running_val_loss)
+
+            # log metrics
+            self._log_metrics(running_metrics, epoch)
+
+            # log sample images
+            self._log_sample_preds(epoch)
+
+            # save checkpoints
+            if epoch != 0 and epoch % self.save_checkpoint_every == 0:
+                path = os.path.join(self.checkpoint_path, f'{self.model_id}_{epoch}.pt')
+                self.save_checkpoint(path, epoch=epoch, loss=running_loss)
+
+            # reset prog bar
+            pbar.refresh()  # force show last state
+            pbar.reset() 
     
-    # Run validation
-    val_running_loss = 0
-    val_running_nme = 0
+        pbar.close()
+                
+    
 
-    for i, batch in enumerate(val_image_loader):
+    def _run_val_step(self, batch):
+        model = self.model
+
         imgs = batch['image'].to(torch.float).to(device)
         lms = batch['landmarks'].to(device)
         ds = batch['d'].to(device)
 
+        self.model.train(False)
         with torch.no_grad():
             outputs = model(imgs)
-            val_running_loss += criterion(outputs.float(), lms.float()).float() / num_val_batches
-            val_running_nme += nme(outputs, lms, ds).float() / num_val_batches
+            loss = self.loss(outputs.float(), lms.float())
+        
+        metrics = self._run_metrics(batch, outputs)
+        self.model.train(True)
 
+        return loss.item(), metrics
 
-    # reset prog bar
-    pbar.refresh()  # force show last state
-    pbar.reset() 
+    def _run_train_step(self, batch):
+        imgs = batch['image'].to(torch.float).to(device)
+        lms = batch['landmarks'].to(device)
+        ds = batch['d'].to(device)
+        
+        self.optimizer.zero_grad()
+
+        outputs = self.model(imgs)
+        loss = self.loss(outputs.float(), lms.float())
+
+        loss.backward()
+        self.optimizer.step()
+
+        self.model.train(False)
+        metrics = self._run_metrics(batch, outputs)
+        self.model.train(True)
+
+        return loss.item(), metrics
+
+    def _run_metrics(self, batch, model_outputs):
+        metrics = None
+        if self.extra_metrics is not None:
+            lms = batch['landmarks'].to(device)
+            ds = batch['d'].to(device)
+
+            with torch.no_grad():
+                metrics = {k: v(model_outputs, lms, ds) for k, v in self.extra_metrics.items()}
+
+        return metrics
+
+    def _log_metrics(self, metrics, step):
+        writer = self.tensorboard_writer
+
+        for m, val in metrics.items():
+            writer.add_scalar(m, val, step)
+
+    def _log_sample_preds(self, step):
+        writer = self.tensorboard_writer
+
+        dataset_train = self.train_dataloader.dataset
+        dataset_val = None if self.val_dataloader is None else self.val_dataloader.dataset
+
+        fig_train = show_grid_samples(dataset_train, model=self.model)
+
+        writer.add_figure("preds/train", fig_train, step)
+
+        fig_val = None
+        if dataset_val:
+            fig_val = show_grid_samples(dataset_val, model=self.model)
+            writer.add_figure("preds/val", fig_val, step)
 
     
-    fig_train = show_grid_samples(dataset_train, model=model)
-    fig_val = show_grid_samples(dataset_val, model=model)
-
-    # write to tensorboard
-    writer.add_scalar("loss/train", running_loss, (epoch+1))
-    writer.add_scalar("nme/train", running_nme, (epoch+1))
-
-    writer.add_scalar("nme/val", val_running_nme, (epoch+1))
-    writer.add_scalar("loss/val", val_running_loss, (epoch+1))
-
-    writer.add_figure("preds/train", fig_train, epoch+1)
-    writer.add_figure("preds/val", fig_val, epoch+1)
-
-    # record losses
-    train_losses.append(running_loss)
-
-    # save checkpoints
-    if epoch % 10 == 0:
+    def save_checkpoint(self, path, epoch=0, loss=0):
         torch.save({
             'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'loss': running_loss,
-            }, f"./checkpoints/model_checkpoint_{epoch}.pt")
+            'model_state_dict': self.model.state_dict(),
+            'optimizer_state_dict': self.optimizer.state_dict(),
+            'loss': loss,
+        }, path)
+
+    def load_from_checkpoint(self, path):
+        checkpoint = torch.load(path)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+
+        
+def train(data_path, 
+          epochs=10, bs=128, workers=4, lr=1e-3, 
+          checkpoint_dir='./checkpoints/', save_every=5
+          ):
+
+    data = pd.read_csv(data_path)
 
 
-pbar.close()
-print('Finished Training!')
+    backbone = resnet18(num_classes=512)
+    backbone.conv1 = torch.nn.Conv2d(
+        1, 64, kernel_size=7, stride=2, padding=3, bias=False
+    )  # one channel only.
+
+
+    model = Resnet18(backbone).to(device)
+    trainable_params = model.parameters()
+
+    
+    criterion = torch.nn.MSELoss()
+    optimizer = optim.Adam(trainable_params, lr=lr)
+
+
+    dataset_train = BWLS3D(
+        data[data.is_train == 1],
+        transforms=[
+            RandomRotation(rotation_prob=.5),
+        ]
+    )
+
+    dataset_val= BWLS3D(
+        data[data.is_train == 0],
+        transforms=[
+            RandomRotation(rotation_prob=.3),
+        ]
+    )
+
+
+    image_loader = DataLoader(dataset_train, 
+                              batch_size  = bs, 
+                              shuffle     = True, 
+                              num_workers = workers,
+                              pin_memory  = True)
+
+    val_image_loader = DataLoader(dataset_val, 
+                              batch_size  = bs, 
+                              shuffle     = True, 
+                              num_workers = workers,
+                              pin_memory  = True)
+
+    
+    writer = SummaryWriter(comment='BW_Regre')
+
+    trainer = Trainer(
+        model, 
+        criterion, 
+        optimizer=optimizer, 
+        train_dataloader=image_loader, 
+        val_dataloader=val_image_loader,
+        extra_metrics= {'nme': nme},
+        tensorboard_writer=writer,
+        checkpoint_path=checkpoint_dir,
+        save_checkpoint_every=save_every,
+    )
+
+    trainer.train(epochs=epochs, early_stop=None)
+
+    print("Done!")
+
+
+def main(args):
+    train(
+        data_path=args.custom_datapath,
+        epochs=args.epochs,
+        lr=args.lr,
+        bs=args.bs,
+        workers=args.data_workers,   
+    )
+
+
+if __name__ == '__main__':
+
+    parser = argparse.ArgumentParser(description="Train script.")
+
+    parser.add_argument('--custom_datapath',
+                    default='datasets/LS3D-W/splits.csv',
+                    help='Path to the split file.')
+
+    parser.add_argument('--epochs',
+                    default=15,
+                    help='Number of epochs')
+
+    parser.add_argument('--lr',
+                    default=1e-3,
+                    help='Learning rate')
+
+    parser.add_argument('--bs',
+                    default=256,
+                    help='Batch size')
+    
+    parser.add_argument('--checkpoint_dir',
+                    default='./checkpoints/',
+                    help='Directory where checkpoint (.pt) will be saved')
+
+    parser.add_argument('--save_every',
+                    default=5,
+                    help='Epoch frequency for saving checkpoints')
+
+    parser.add_argument('--data-workers',
+                    default=4,
+                    help='How many workers for data loaders')
+
+    args  = parser.parse_args(sys.argv[1:])
+
+    main(args)
