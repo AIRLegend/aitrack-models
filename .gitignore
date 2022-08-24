@@ -132,6 +132,7 @@ dmypy.json
 .tar.gz
 .zip
 .csv
+datasets/
 
 # checkpoints
 .pt
