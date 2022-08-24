@@ -28,7 +28,7 @@ DATALOADER_N_WORKERS = 4
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
-data = pd.read_csv('../LS3D-W/splits.csv')
+data = pd.read_csv('datasets/LS3D-W/splits.csv')
 
 
 backbone = resnet18(num_classes=512)
