@@ -127,3 +127,14 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Data stuf
+.tar.gz
+.zip
+.csv
+
+# checkpoints
+.pt
+
+# tensorboard stuff
+*.tfevents.*

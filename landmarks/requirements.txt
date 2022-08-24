@@ -1,0 +1,9 @@
+numpy
+pandas
+matplotlib
+scipy
+torch
+torchfile==0.1.0
+torchvision
+Pillow
+tqdm
