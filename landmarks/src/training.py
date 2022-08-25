@@ -67,6 +67,8 @@ class Trainer:
         self.checkpoint_path = checkpoint_path
         self.model_id=model_id
         
+        self.last_epoch_ = 0  # used for recovering previous training sessions
+        
 
 
     def train(self, epochs=10, early_stop=None):
@@ -76,7 +78,7 @@ class Trainer:
         train_losses = []
         val_losses = []
 
-        for epoch in range(epochs):
+        for epoch in range(self.last_epoch_, self.last_epoch_ + epochs):
             running_loss = 0.0
             running_metrics = {}
 
@@ -95,7 +97,7 @@ class Trainer:
 
                 pbar.update()
                 
-                pbar.set_description(f"[Epoch {epoch+1}/{epochs}] Loss: {running_loss}", refresh=True)
+                pbar.set_description(f"[Epoch {epoch+1}/{self.last_epoch_ + epochs}] Loss: {running_loss}", refresh=True)
             
             train_losses.append(running_loss)
             # Validation
@@ -113,7 +115,7 @@ class Trainer:
 
                 running_metrics['val/loss'] = running_val_loss
 
-                pbar.set_description(f"[Epoch {epoch+1}/{epochs}] Val Loss: {running_val_loss}", refresh=True)
+                pbar.set_description(f"[Epoch {epoch+1}/{self.last_epoch_ + epochs}] Val Loss: {running_val_loss}", refresh=True)
 
             val_losses.append(running_val_loss)
 
@@ -133,7 +135,10 @@ class Trainer:
             pbar.reset() 
     
         pbar.close()
-                
+
+        # save checkpoint for last epoch
+        path = os.path.join(self.checkpoint_path, f'{self.model_id}_{epoch}.pt')
+        self.save_checkpoint(path, epoch=epoch, loss=running_loss)
     
 
     def _run_val_step(self, batch):
@@ -217,12 +222,14 @@ class Trainer:
         checkpoint = torch.load(path)
         self.model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        self.last_epoch_ = checkpoint['epoch']
         
 
         
 def train(data_path, 
           epochs=10, bs=128, workers=4, lr=1e-3, 
-          checkpoint_dir='./checkpoints/', save_every=5
+          checkpoint_dir='./checkpoints/', save_every=5,
+          from_checkpoint=None,
           ):
 
     data = pd.read_csv(data_path)
@@ -291,6 +298,9 @@ def train(data_path,
         save_checkpoint_every=save_every,
     )
 
+    if from_checkpoint:
+        trainer.load_from_checkpoint(from_checkpoint)
+
     trainer.train(epochs=epochs, early_stop=None)
 
     print("Done!")
@@ -303,6 +313,7 @@ def main(args):
         lr=args.lr,
         bs=args.bs,
         workers=args.data_workers,   
+        from_checkpoint=args.from_checkpoint
     )
 
 
@@ -342,6 +353,10 @@ if __name__ == '__main__':
                     default=4,
                     type=int,
                     help='How many workers for data loaders')
+
+    parser.add_argument('--from-checkpoint',
+                    default=None,
+                    help='Resume training from previously saved checkpoint')
 
     args  = parser.parse_args(sys.argv[1:])
     
