@@ -130,7 +130,7 @@ class SampleImageTransform():
 class RandomContrastBrightness(SampleImageTransform):
     def __init__(self, transform=None, p=.1):
         super().__init__(None)
-        self.transform = torchtransforms.ColorJitter(contrast=(.5, 2), brightness=(.5, 2)) if not transform else transform
+        self.transform = torchtransforms.ColorJitter(contrast=(.5, 1.6), brightness=(.5, 1.6)) if not transform else transform
         self.p = p
 
     def __call__(self, sample):
