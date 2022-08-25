@@ -9,7 +9,7 @@ class Resnet18(torch.nn.Module):
         self.backbone = model
 
         self.fc1 = torch.nn.Linear(in_features=512, out_features=256)
-        self.drop1 = torch.nn.Dropout(p=.3)
+        self.drop1 = torch.nn.Dropout(p=.2)
         self.out = torch.nn.Linear(in_features=256, out_features=68*2)
 
         

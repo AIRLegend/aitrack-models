@@ -66,15 +66,13 @@ class RandomRotation(object):
         }
 
     
-    
-    
 class NormalizeSample(object):
     def __init__(self, 
                  mean=(0.485, 0.456, 0.406), 
                  std=(0.229, 0.224, 0.225)):
         
         if mean and std:
-            self.norm = torchtransforms.Normalize((0.485, 0.456, 0.406),  (0.229, 0.224, 0.225))
+            self.norm = torchtransforms.Normalize(mean, std)
         else:
             self.norm = None
         
@@ -116,3 +114,56 @@ class UnNormalize(object):
             t.mul_(s).add_(m)
             # The normalize code -> t.sub_(m).div_(s)
         return tensor
+
+
+class SampleImageTransform():
+    def __init__(self, transform=None):
+        self.transform = transform
+    
+    def __call__(self, sample):
+        sample['image'] = torch.tensor(sample['image']) if isinstance(sample['image'], np.ndarray) else sample['image']
+        sample['image'] = self.transform(sample['image'])
+
+        return sample
+
+
+class RandomContrastBrightness(SampleImageTransform):
+    def __init__(self, transform=None, p=.1):
+        super().__init__(None)
+        self.transform = torchtransforms.ColorJitter(contrast=(.5, 2), brightness=(.5, 2)) if not transform else transform
+        self.p = p
+
+    def __call__(self, sample):
+        if np.random.uniform() > self.p:
+            return sample
+        return super().__call__(sample)
+
+
+class Posterize(SampleImageTransform):
+    def __init__(self, transform=None, bits=4, p=.1):
+        super().__init__(None)
+        self.transform = torchtransforms.RandomPosterize(bits) if not transform else transform
+        self.p = p
+
+    def __call__(self, sample):
+        if np.random.uniform() > self.p:
+            return sample
+
+        if isinstance(sample['image'], np.ndarray):
+            sample['image'] = torch.tensor(sample['image'])
+
+        if sample['image'].dtype != torch.uint8:
+            if sample['image'].max() < 10:
+                sample['image'] = (sample['image'] * 255).byte()
+
+        sample =  super().__call__(sample)
+
+        if sample['image'].max() > 10:  # revert back to [0-1] range
+            sample['image'] = (sample['image'] / 255).float()
+
+        return sample
+
+class RandomSharpness(SampleImageTransform):
+    def __init__(self, transform=None, p=.1):
+        super().__init__(None)
+        self.transform = torchtransforms.RandomAdjustSharpness(np.random.choice(12), p=p) if not transform else transform

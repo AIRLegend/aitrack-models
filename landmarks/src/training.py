@@ -5,12 +5,13 @@ import argparse
 from typing import Dict, Union
 from torch.cuda import check_error
 from torchvision.models import resnet18, ResNet18_Weights
+from torchvision import transforms
 
 from model import Resnet18
 from utils import show_grid_samples
 from metrics import nme
 from dataset import BWLS3D
-from transforms import RandomRotation
+import transforms as customtransforms
 
 
 
@@ -244,14 +245,21 @@ def train(data_path,
     dataset_train = BWLS3D(
         data[data.is_train == 1],
         transforms=[
-            RandomRotation(rotation_prob=.5),
+            customtransforms.RandomRotation(rotation_prob=.5),
+            transforms.RandomChoice([ # pick one among random image-only transforms
+                customtransforms.Posterize(p=.1),
+                customtransforms.RandomContrastBrightness(p=.2),
+                customtransforms.RandomSharpness(p=.1)
+            ]),
+            customtransforms.NormalizeSample(mean=0.445313569, std=0.2692461874),
         ]
     )
 
     dataset_val= BWLS3D(
         data[data.is_train == 0],
         transforms=[
-            RandomRotation(rotation_prob=.3),
+            customtransforms.RandomRotation(rotation_prob=.3),
+            customtransforms.NormalizeSample(mean=0.445313569, std=0.2692461874)
         ]
     )
 
@@ -308,14 +316,17 @@ if __name__ == '__main__':
 
     parser.add_argument('--epochs',
                     default=15,
+                    type=int,
                     help='Number of epochs')
 
     parser.add_argument('--lr',
                     default=1e-3,
+                    type=float,
                     help='Learning rate')
 
     parser.add_argument('--bs',
                     default=256,
+                    type=int,
                     help='Batch size')
     
     parser.add_argument('--checkpoint_dir',
@@ -324,12 +335,14 @@ if __name__ == '__main__':
 
     parser.add_argument('--save_every',
                     default=5,
+                    type=int,
                     help='Epoch frequency for saving checkpoints')
 
     parser.add_argument('--data-workers',
                     default=4,
+                    type=int,
                     help='How many workers for data loaders')
 
     args  = parser.parse_args(sys.argv[1:])
-
+    
     main(args)
