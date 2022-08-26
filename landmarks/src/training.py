@@ -252,12 +252,10 @@ def train(data_path,
     dataset_train = BWLS3D(
         data[data.is_train == 1],
         transforms=[
-            customtransforms.RandomRotation(rotation_prob=.5),
-            transforms.RandomChoice([ # pick one among random image-only transforms
-                customtransforms.Posterize(p=.1),
-                customtransforms.RandomContrastBrightness(p=.2),
-                customtransforms.RandomSharpness(p=.1)
-            ]),
+            customtransforms.RandomShift(p=.15),
+            customtransforms.RandomMirrorSample(p=.4),
+            customtransforms.RandomRotation(rotation_prob=.3),
+            customtransforms.RandomContrastBrightness(p=.2),
             customtransforms.NormalizeSample(mean=0.445313569, std=0.2692461874),
         ]
     )
@@ -265,11 +263,11 @@ def train(data_path,
     dataset_val= BWLS3D(
         data[data.is_train == 0],
         transforms=[
+            customtransforms.RandomMirrorSample(p=.4),
             customtransforms.RandomRotation(rotation_prob=.3),
             customtransforms.NormalizeSample(mean=0.445313569, std=0.2692461874)
         ]
     )
-
 
     image_loader = DataLoader(dataset_train, 
                               batch_size  = bs, 
@@ -322,7 +320,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train script.")
 
     parser.add_argument('--custom_datapath',
-                    default='datasets/LS3D-W/splits.csv',
+                    default='datasets/LS3D-W/menpo.csv',
                     help='Path to the split file.')
 
     parser.add_argument('--epochs',

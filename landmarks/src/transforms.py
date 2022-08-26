@@ -1,7 +1,9 @@
 import numpy as np
 from PIL import Image
+from PIL.Image import Image as ImageType
 import torch
 from torchvision import transforms as torchtransforms
+from utils import get_roi
 
 class RandomRotation(object):
     def __init__(self, rotation_range=(-45.0, 45.0), rotation_prob=.3):
@@ -42,22 +44,23 @@ class RandomRotation(object):
         
         image, landmarks = sample['image'], sample['landmarks']
         
-        landmarks = landmarks.reshape((68, 2))
-
-        h, w = image.shape[:2]
+        if len(landmarks.shape) < 2:
+            landmarks = landmarks.reshape((68, 2))
         
         if isinstance(image, torch.Tensor):
-            image = (image).detach().numpy()
+            image = (image).detach().numpy().squeeze()
 
         image = image.squeeze()
 
+        w, h = image.shape[0], image.shape[1]
+
         ang = np.random.uniform(*self.rotation_range) 
         rotated_img = np.array(
-            Image.fromarray(np.uint8(image * 255)).rotate(ang)
-        ) / 255
+            Image.fromarray(image).rotate(ang)
+        )
         rotated_lms = self._to_homogeneous(landmarks)
 
-        transform_mat = self._get_transform_mat(ang)
+        transform_mat = self._get_transform_mat(ang, origin=(w/2, h/2))
         rotated_lms = (transform_mat @ rotated_lms.T).T
 
         return {
@@ -83,18 +86,138 @@ class NormalizeSample(object):
 
         image, landmarks = sample['image'], sample['landmarks']
         
-        # image_size = image.shape[:2]
+        image = torch.tensor(image) if isinstance(image, np.ndarray) else image
 
         if image.max() > 10:
-            image = (image / 255)
-            
-        # if image.shape[0] != 3:
-        #     image = np.transpose(image, (2,0,1))   # channels first
+            image = (image / 255.0)
+
+        if len(image.shape) < 3:
+            image = image.unsqueeze(0)
+
         
-        image = torch.Tensor(image) if isinstance(image, np.ndarray) else image
         image = self.norm(image)
 
         return {'image': image, 'landmarks': landmarks}
+
+
+
+class RandomMirrorSample(object):
+    def __init__(self, p=.5):
+        self.p = p
+        self.mirror_transform = torchtransforms.RandomHorizontalFlip(p=1)
+        self.pil_to_tensor = torchtransforms.PILToTensor()
+        
+    def __call__(self, sample):
+        if self.p < np.random.uniform():
+            return sample
+
+        image, landmarks = sample['image'], sample['landmarks']
+        
+        if isinstance(image, np.ndarray):
+            image = torch.tensor(image)
+        elif isinstance(image, ImageType):
+            image = self.pil_to_tensor(image)
+
+        image = self.mirror_transform(image)
+
+        image_width = image.shape[-2]
+
+        landmarks[:, 0] =  image_width - landmarks[:, 0]
+
+        sample['image'] = image
+        sample['landmarks'] = landmarks
+        return sample
+
+
+class CropROI(object):
+    def __init__(self, range_zoomout=(.1, .3)):
+        self.to_pil = torchtransforms.ToPILImage(mode='L')
+        self.range_zoomout = range_zoomout
+        
+    def __call__(self, sample):
+        """ image must be PIL image
+        """
+        image, landmarks = sample['image'], sample['landmarks']
+        
+        _, landmarks, crop = get_roi(
+            image, landmarks, return_crop=True, 
+            margin_percent=np.random.uniform(*self.range_zoomout)
+        )
+
+        sample['image'] = crop
+        sample['landmarks'] = landmarks
+        return sample
+
+
+class RandomShift(object):
+    def __init__(self, new_img_size=(114,114), p=.5):
+        self.to_pil = torchtransforms.ToPILImage(mode='L')
+        
+        self.canvas_size= new_img_size
+        self.p = p
+        
+    def __call__(self, sample):
+        if np.random.uniform() > self.p:
+            return sample
+        
+        image, landmarks = sample['image'], sample['landmarks']
+        newlm = np.array(landmarks)
+        
+        if isinstance(image, torch.Tensor):
+            im2 = self.to_pil(image)
+        elif isinstance(image, np.ndarray):
+            im2 = Image.fromarray(image.squeeze(), mode='L')
+        else:
+            im2 = image.copy()
+            
+            
+        scale = np.random.uniform(0.5, 0.8)
+        
+        offset_x_percent = np.random.uniform(0.01, 0.3)
+        offset_y_percent = np.random.uniform(0.01, 0.3)
+            
+        original_size = im2.size
+        canvas_size = self.canvas_size
+        
+        paste_size = (int(canvas_size[0]*scale), int(canvas_size[1]*scale))
+        
+        offset = (int(canvas_size[0] * offset_x_percent), int(canvas_size[1] * offset_y_percent))
+        
+        black_canvas = Image.new("L", canvas_size)
+        im2 = im2.resize(paste_size)
+        black_canvas.paste(im2, offset)
+        
+        
+        ratio_x, ratio_y = paste_size[0] / original_size[0], paste_size[1] / original_size[1]
+        
+        newlm[:, 0] *= ratio_x
+        newlm[:, 1] *= ratio_y
+        
+        
+        newlm[:, 0] += offset[0]
+        newlm[:, 1] += offset[1]
+        
+        sample = {'image': np.array(black_canvas), 'landmarks': newlm}
+        return sample
+
+
+class Resize(object):
+    def __init__(self, size=(114,114)):
+        self.size = size
+        
+    def __call__(self, sample):
+        image, landmarks = sample['image'], sample['landmarks']
+
+        ratio_x, ratio_y = self.size[0] / image.size[0],  self.size[1] / image.size[1]
+        
+        image = image.resize(self.size)
+
+        landmarks[:,0] = landmarks[:,0] * ratio_x
+        landmarks[:,1] = landmarks[:,1] * ratio_y
+
+        sample['image'] = image
+        sample['landmarks'] = landmarks
+        return sample
 
 
 
@@ -122,6 +245,10 @@ class SampleImageTransform():
     
     def __call__(self, sample):
         sample['image'] = torch.tensor(sample['image']) if isinstance(sample['image'], np.ndarray) else sample['image']
+        
+        if len(sample['image'].shape) < 3:
+            sample['image'] = sample['image'].unsqueeze(0)
+
         sample['image'] = self.transform(sample['image'])
 
         return sample
@@ -136,6 +263,9 @@ class RandomContrastBrightness(SampleImageTransform):
     def __call__(self, sample):
         if np.random.uniform() > self.p:
             return sample
+
+        
+
         return super().__call__(sample)
 
 
