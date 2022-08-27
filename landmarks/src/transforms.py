@@ -100,7 +100,6 @@ class NormalizeSample(object):
         return {'image': image, 'landmarks': landmarks}
 
 
-
 class RandomMirrorSample(object):
     def __init__(self, p=.5):
         self.p = p
@@ -118,10 +117,13 @@ class RandomMirrorSample(object):
         elif isinstance(image, ImageType):
             image = self.pil_to_tensor(image)
 
+        image_width = image.shape[-2]
+        
         image = self.mirror_transform(image)
 
-        image_width = image.shape[-2]
-
+        if len(landmarks.shape) < 2:
+            landmarks = landmarks.reshape((-1, 2))
+            
         landmarks[:, 0] =  image_width - landmarks[:, 0]
 
         sample['image'] = image
@@ -131,7 +133,7 @@ class RandomMirrorSample(object):
 
 class CropROI(object):
     def __init__(self, range_zoomout=(.1, .3)):
-        self.to_pil = torchtransforms.ToPILImage(mode='L')
+        #self.to_pil = torchtransforms.ToPILImage(mode='L')
         self.range_zoomout = range_zoomout
         
     def __call__(self, sample):
@@ -220,7 +222,6 @@ class Resize(object):
         return sample
 
 
-
 class UnNormalize(object):
     def __init__(self, mean, std):
         self.mean = mean
@@ -245,7 +246,7 @@ class SampleImageTransform():
     
     def __call__(self, sample):
         sample['image'] = torch.tensor(sample['image']) if isinstance(sample['image'], np.ndarray) else sample['image']
-        
+
         if len(sample['image'].shape) < 3:
             sample['image'] = sample['image'].unsqueeze(0)
 
@@ -292,6 +293,7 @@ class Posterize(SampleImageTransform):
             sample['image'] = (sample['image'] / 255).float()
 
         return sample
+
 
 class RandomSharpness(SampleImageTransform):
     def __init__(self, transform=None, p=.1):

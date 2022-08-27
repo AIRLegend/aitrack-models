@@ -44,8 +44,9 @@ def show_grid_samples(dataset, model, idcs=None, columns=2):
 
     for axi, i in enumerate(idcs):
         sample = dataset[i]
-        img = torch.Tensor(sample['image']).clone().detach().to(torch.float).unsqueeze(0).to(device)
+        img = (sample['image']).clone().detach().to(torch.float).unsqueeze(0).to(device) if isinstance(sample['image'], torch.Tensor) else torch.tensor(sample['image'])
         lms = sample['landmarks']
+        
         lms *= 114 #lms are [0-1]
         lms = lms.reshape((68, 2))
 
@@ -64,6 +65,5 @@ def show_grid_samples(dataset, model, idcs=None, columns=2):
         ax[axi//columns, axi%columns].scatter(preds[:,0], preds[:,1], marker='x', s=15)
         ax[axi//columns, axi%columns].scatter(lms[:,0], lms[:,1], c='red', s=7)
         
-    plt.close()
         
     return fig

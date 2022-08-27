@@ -14,7 +14,6 @@ class Resnet18(torch.nn.Module):
 
         
     def forward(self, inp):
-
         backbone_activation = self.backbone.forward(inp).squeeze()
         out = self.fc1(backbone_activation)
         out = self.drop1(out)

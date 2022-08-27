@@ -42,15 +42,6 @@ class BWLS3D(Dataset):
         sample = {'image': image, 'landmarks': lms}
 
 
-        #image, lms, _ = self._get_crop(image, lms)
-        
-        # image = np.array(
-        #     image.resize(self.image_size)
-        # )[None, :, :]
-
-        # # Normalize image
-        # image = image.astype(float) / 255.0
-        
         sample = self.crop_transform(sample)
         sample = self.resize_transform(sample)
 
@@ -63,17 +54,22 @@ class BWLS3D(Dataset):
 
         if len(sample['landmarks'].shape) >= 2:
             sample['landmarks'] = sample['landmarks'].flatten()
-
         if sample['landmarks'].max() > 1:  # ensure targets are in 0-1 range
             sample['landmarks'] /= 114  # hardcoded, TODO: Change 
 
+
+        if sample['image'].max() > 10:
+            sample['image'] = sample['image'] / 255
+
+        if not isinstance(sample['image'], torch.Tensor):
+            sample['image'] = torch.tensor(sample['image'])
 
         lms = sample['landmarks']
         
         # include info of eye distance bb size for normalization
         # (after having transformations applied to the landmarks)
-        eye1 = lms[39*2], lms[39*2] + 1
-        eye2 = lms[42*2], lms[42*2] + 1
+        eye1 = lms[39*2], lms[39*2 +1]
+        eye2 = lms[42*2], lms[42*2 + 1]
         sample['d'] = np.sqrt((eye2[0]-eye1[0])**2 + (eye2[1]-eye1[1])**2)
 
         return sample

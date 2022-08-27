@@ -252,8 +252,8 @@ def train(data_path,
     dataset_train = BWLS3D(
         data[data.is_train == 1],
         transforms=[
-            customtransforms.RandomShift(p=.15),
-            customtransforms.RandomMirrorSample(p=.4),
+            #customtransforms.RandomMirrorSample(p=.4),
+            customtransforms.RandomShift(p=.3),
             customtransforms.RandomRotation(rotation_prob=.3),
             customtransforms.RandomContrastBrightness(p=.2),
             customtransforms.NormalizeSample(mean=0.445313569, std=0.2692461874),
@@ -263,7 +263,7 @@ def train(data_path,
     dataset_val= BWLS3D(
         data[data.is_train == 0],
         transforms=[
-            customtransforms.RandomMirrorSample(p=.4),
+            #customtransforms.RandomMirrorSample(p=.4),
             customtransforms.RandomRotation(rotation_prob=.3),
             customtransforms.NormalizeSample(mean=0.445313569, std=0.2692461874)
         ]
@@ -311,7 +311,8 @@ def main(args):
         lr=args.lr,
         bs=args.bs,
         workers=args.data_workers,   
-        from_checkpoint=args.from_checkpoint
+        from_checkpoint=args.from_checkpoint,
+        save_every=args.save_every
     )
 
 
